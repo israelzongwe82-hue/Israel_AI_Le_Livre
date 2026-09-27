@@ -1,0 +1,150 @@
+name: Construire Windows Israël_AI Le Livre
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "*.zip"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  construire-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Trouver le ZIP du livre
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem -Path . -Filter *.zip -File | Select-Object -First 1
+
+          if (-not $zip) {
+            Write-Error "ERREUR : aucun fichier ZIP trouvé."
+            exit 1
+          }
+
+          Write-Host "ZIP trouvé : $($zip.FullName)"
+          "ZIP_FILE=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extraire le projet
+        shell: powershell
+        run: |
+          if (Test-Path projet) {
+            Remove-Item projet -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path projet | Out-Null
+
+          Expand-Archive -Path "$env:ZIP_FILE" -DestinationPath projet -Force
+
+          Write-Host "Projet extrait."
+
+      - name: Trouver le dossier de l'application
+        shell: powershell
+        run: |
+          $package = Get-ChildItem -Path projet -Filter package.json -File -Recurse |
+            Where-Object { $_.FullName -notlike "*node_modules*" } |
+            Select-Object -First 1
+
+          if (-not $package) {
+            Write-Error "ERREUR : package.json introuvable."
+            exit 1
+          }
+
+          $appDir = $package.Directory.FullName
+
+          Write-Host "Application trouvée dans : $appDir"
+          "APP_DIR=$appDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Vérifier les fichiers du livre
+        shell: powershell
+        run: |
+          if (-not (Test-Path "$env:APP_DIR\www\index.html")) {
+            Write-Error "ERREUR : www\index.html introuvable."
+            exit 1
+          }
+
+          Write-Host "index.html trouvé."
+
+      - name: Installer Electron
+        working-directory: ${{ env.APP_DIR }}
+        shell: powershell
+        run: |
+          npm install --save-dev electron electron-builder
+
+      - name: Créer le fichier Electron
+        working-directory: ${{ env.APP_DIR }}
+        shell: powershell
+        run: |
+          $main = @'
+          const { app, BrowserWindow } = require("electron");
+          const path = require("path");
+
+          function createWindow() {
+            const win = new BrowserWindow({
+              width: 1200,
+              height: 800,
+              minWidth: 900,
+              minHeight: 600,
+              title: "Israël_AI — Le Livre",
+              webPreferences: {
+                contextIsolation: true,
+                nodeIntegration: false
+              }
+            });
+
+            win.loadFile(path.join(__dirname, "www", "index.html"));
+          }
+
+          app.whenReady().then(() => {
+            createWindow();
+
+            app.on("activate", () => {
+              if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+              }
+            });
+          });
+
+          app.on("window-all-closed", () => {
+            if (process.platform !== "darwin") {
+              app.quit();
+            }
+          });
+          '@
+
+          Set-Content -Path "main.js" -Value $main -Encoding UTF8
+
+      - name: Configurer Electron Builder
+        working-directory: ${{ env.APP_DIR }}
+        shell: powershell
+        run: |
+          node -e "const fs=require('fs'); const p=require('./package.json'); p.name='israel-ai-le-livre'; p.productName='Israël_AI - Le Livre'; p.version='1.0.0'; p.main='main.js'; p.scripts={start:'electron .',build:'electron-builder --win'}; p.build={appId:'com.israelzongwe.israelai.livre',productName:'Israël_AI - Le Livre',directories:{output:'dist'},files:['main.js','www/**/*','package.json'],win:{target:[{target:'nsis',arch:['x64']}]},nsis:{oneClick:false,allowToChangeInstallationDirectory:true,createDesktopShortcut:true,createStartMenuShortcut:true}}; fs.writeFileSync('package.json',JSON.stringify(p,null,2));"
+
+      - name: Installer les dépendances finales
+        working-directory: ${{ env.APP_DIR }}
+        shell: powershell
+        run: |
+          npm install
+
+      - name: Construire l'application Windows
+        working-directory: ${{ env.APP_DIR }}
+        shell: powershell
+        run: |
+          npm run build
+
+      - name: Publier l'application Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: Israel_AI_Le_Livre_Windows
+          path: ${{ env.APP_DIR }}/dist/*.exe
+          if-no-files-found: error
